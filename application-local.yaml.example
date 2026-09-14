@@ -1,0 +1,39 @@
+# ============================================================
+# CONFIGURACAO LOCAL - MODELO (este SIM e versionado)
+# ============================================================
+# Lido automaticamente quando o perfil `local` esta ativo:
+#     ./gradlew bootRun --args='--spring.profiles.active=local'
+# Fica na RAIZ do projeto de proposito: assim nao entra no .jar.
+#
+# Copie para application-local.yaml e preencha. O original e ignorado pelo git.
+#
+# ============================================================
+spring:
+  datasource:
+    url: "jdbc:sap://SEU-HOST:30015/?validateCertificate=false"
+    username: "LEITURA_SBODEMOBR"
+    password: 'SUA-SENHA-AQUI'
+    hikari:
+      # Schema padrao da conexao: resolve nomes de tabela NAO qualificados.
+      # Descomente e ajuste se quiser escrever `FROM OINV` em vez de
+      # `FROM SBODEMOBR.OINV`. Veja a observacao em query.allowed-schemas.
+      # schema: SBODEMOBR
+      read-only: true
+
+query:
+  # Allowlist de seguranca da APLICACAO (nao confundir com o schema acima).
+  # ATENCAO: com esta lista preenchida, toda tabela precisa vir qualificada
+  #          (`SBODEMOBR.OINV`, nao `OINV`). Deixe vazia para aceitar nomes
+  #          nao qualificados, confiando o isolamento ao usuario do banco.
+  allowed-schemas: []
+  # allowed-schemas:
+  #   - SBODEMOBR
+
+api:
+  security:
+    # Vazio desativa a checagem do header X-API-Key (so para uso local).
+    api-key: ""
+
+logging:
+  level:
+    br.andrew.odbc_sap_hana: DEBUG

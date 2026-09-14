@@ -1,0 +1,16 @@
+# Nos testes o SAP HANA e substituido por um H2 em memoria com os mesmos contratos.
+spring:
+  datasource:
+    url: jdbc:h2:mem:saptest;DB_CLOSE_DELAY=-1
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+    hikari:
+      read-only: false
+  sql:
+    init:
+      mode: always
+
+api:
+  security:
+    api-key: ""
