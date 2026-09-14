@@ -4,7 +4,7 @@
 # do HANA para dentro de uma layer da imagem, de onde ela pode ser
 # extraida por qualquer um que baixe a imagem.
 # ============================================================
-application.yaml
+src/main/resources/application.yaml
 application-local.yaml
 application-local.yml
 application-*-local.yaml

@@ -14,6 +14,11 @@ src/main/**/application-*.yaml
 src/main/**/application-*.yml
 version.properties
 
+src/main/resources/application.yaml
+application-local.yaml
+application-local.yml
+application-*-local.yaml
+
 # ... mas o MODELO sem segredo continua versionado:
 !application-*.yaml.example
 !application-*.yml.example
