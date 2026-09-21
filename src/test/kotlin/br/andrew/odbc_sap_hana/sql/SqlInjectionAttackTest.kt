@@ -177,6 +177,27 @@ class SqlInjectionAttackTest {
     }
 
     @Test
+    fun `dois pontos em identificador entre aspas nao vira parametro`() {
+        // `SELECT 1 AS "saldo:filial"` nao declara parametro: o binder do
+        // NamedParameterJdbcTemplate tambem ignora. Exigi-lo recusaria consulta
+        // legitima. (Achado da revisao adversarial.)
+        val sql = """SELECT A AS "saldo:filial" FROM VENDAS.C WHERE X = :codigo"""
+        assertEquals(setOf("codigo"), validator.parameterNames(sql))
+        validator.validateParameters(sql, mapOf("codigo" to 1))
+    }
+
+    @Test
+    fun `palavra proibida em identificador continua sendo detectada`() {
+        // A mascara de PARAMETROS nao pode afrouxar a de PALAVRAS-CHAVE: sao
+        // mascaras diferentes, de proposito.
+        assertTrue(Regex("INSERT").containsMatchIn(
+            assertFailsWith<SqlValidationException> {
+                validator.validate("SELECT \"INSERT\" FROM VENDAS.C")
+            }.message!!,
+        ))
+    }
+
+    @Test
     fun `normalizacao remove ponto e virgula final`() {
         assertEquals("SELECT 1 FROM DUMMY", validator.validate("  SELECT 1 FROM DUMMY ;  "))
     }

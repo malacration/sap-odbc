@@ -1,0 +1,244 @@
+================================================================
+PLANO - sap-reports
+================================================================
+
+## CONTEXTO
+
+Hoje existem tres servicos: sap-front (Angular), sap-rovema (middleware do SAP B1
+Service Layer, "sap-service") e sap-odbc (gateway SQL somente-leitura no HANA,
+recem endurecido contra SQL injection).
+
+Relatorios ainda nao tem casa. Coloca-los no sap-odbc destruiria o que torna
+aquele servico defensavel - superficie minima, sem I/O de arquivo, sem execucao
+de codigo. Coloca-los no sap-rovema faria uma renderizacao pesada degradar o
+middleware critico do B1.
+
+Este plano cria um QUARTO SERVICO, sap-reports, com um requisito de projeto acima
+dos demais: o artefato de relatorio precisa ser geravel por IA - texto,
+versionavel, validavel, nada binario.
+
+
+## DECISOES JA TOMADAS
+
+  Template    : HTML + Thymeleaf
+  Motor PDF   : openhtmltopdf (LGPL - evita a AGPL do iText)
+  Saidas      : PDF, HTML, CSV (sem XLSX)
+  Auth        : JWT do sap-rovema (segredo compartilhado)
+  Templates   : versionados no Git, revisados por PR
+
+
+## ARQUITETURA
+
+  sap-front --JWT--> sap-reports --X-API-Key--> sap-odbc --JDBC(RO)--> HANA
+                          |
+                          +-- src/main/resources/relatorios/*.{yaml,html}
+
+O sap-reports nunca fala JDBC. Todo dado passa pelo ReadOnlySqlValidator do
+sap-odbc, reaproveitando a validacao ja testada em vez de duplica-la.
+
+
+## O ARTEFATO QUE A IA GERA
+
+Cada relatorio sao DOIS ARQUIVOS com o mesmo nome base, em
+src/main/resources/relatorios/. A separacao e deliberada: o YAML carrega o que
+precisa ser validado (SQL, parametros, permissao); o HTML e puramente
+apresentacao. Isso permite validar o YAML por JSON Schema e manter a IA num
+contrato estreito.
+
+--- vendas-por-cliente.yaml ---
+
+id: vendas-por-cliente
+nome: Vendas por cliente
+descricao: Total faturado por cliente no periodo
+papeis: [vendedor, admin]          # casa com rules.yml do rovema
+parametros:
+  - nome: dataInicio               # precisa bater com :dataInicio no SQL
+    tipo: date
+    obrigatorio: true
+    rotulo: Data inicial
+  - nome: dataFim
+    tipo: date
+    obrigatorio: true
+consulta:
+  sql: >
+    SELECT T0.CardCode, T0.CardName, SUM(T0.DocTotal) AS TOTAL
+    FROM SBOGRUPOROVEMA.OINV T0
+    WHERE T0.DocDate BETWEEN :dataInicio AND :dataFim
+    GROUP BY T0.CardCode, T0.CardName
+    ORDER BY TOTAL DESC
+  maxRows: 5000
+colunas:                            # contrato do CSV e do HTML
+  - campo: CardCode
+    titulo: Codigo
+  - campo: TOTAL
+    titulo: Total
+    tipo: moeda
+formatos: [pdf, html, csv]
+
+--- vendas-por-cliente.html ---
+
+Template Thymeleaf recebendo: linhas, colunas, params, meta.
+
+
+### VALIDACAO NA INICIALIZACAO (peca central)
+
+ReportDefinitionValidator roda no boot e DERRUBA A APLICACAO se qualquer
+definicao estiver inconsistente. E o que transforma "IA gerou" em "IA gerou
+certo":
+
+  1. Os :nome do SQL casam exatamente com parametros[].nome - o sap-odbc rejeita
+     parametro faltando E sobrando (400 sql_invalido).
+  2. O SQL obedece as regras do sap-odbc: sem comentarios, uma instrucao so,
+     comeca em SELECT/WITH, sem ";" final, tabelas qualificadas com schema.
+  3. colunas[].campo existe entre os campos projetados.
+  4. papeis existem no rules.yml.
+  5. maxRows <= max-rows-limit do sap-odbc.
+  6. O template HTML compila no Thymeleaf.
+
+Erro de IA vira falha de deploy, nao erro em producao.
+
+
+## API HTTP
+
+  GET   /api/v1/relatorios
+        lista os relatorios visiveis aos papeis do usuario
+
+  GET   /api/v1/relatorios/{id}
+        metadados + spec de parametros (o front monta o formulario)
+
+  POST  /api/v1/relatorios/{id}/render?formato=pdf|html|csv
+        gera o relatorio
+
+Corpo do render:
+  { "params": { "dataInicio": "2026-01-01", "dataFim": "2026-01-31" } }
+
+Resposta: application/pdf, text/html ou text/csv com Content-Disposition.
+
+
+## INTERFACE COM O sap-odbc - DETALHES QUE VAO MORDER
+
+Contrato: POST /api/v1/query, header X-API-Key, corpo
+{sql, params, maxRows, timeoutSeconds}, resposta
+{columns[], rows[], rowCount, truncated, elapsedMs}.
+
+Quatro armadilhas confirmadas na leitura do codigo:
+
+  1. BigDecimal VOLTA COMO STRING JSON, nao numero
+     (QueryService.toJsonValue faz stripTrailingZeros().toPlainString()).
+     O ValueFormatter precisa converter para BigDecimal antes de formatar moeda -
+     usar Double aqui introduz erro de arredondamento em valor financeiro.
+
+  2. Datas chegam como string ISO (LocalDate/LocalDateTime.toString()).
+
+  3. truncated: true SIGNIFICA DADO FALTANDO. Um relatorio NUNCA pode entregar
+     resultado truncado em silencio: se vier true, ou falha com mensagem clara,
+     ou pagina (item 4).
+
+  4. Teto de 10.000 linhas (max-rows-limit) e o sap-odbc nao tem paginacao. Para
+     CSV grande, o SQL do relatorio declara LIMIT :limit OFFSET :offset e o
+     sap-reports itera - confirmado que o validador aceita LIMIT/OFFSET.
+
+Cliente: RestClient do Spring com timeout maior que o timeoutSeconds enviado, e
+traducao dos erros do sap-odbc (sql_invalido, timeout, erro_banco) para respostas
+proprias sem vazar o SQL ao usuario final.
+
+
+## AUTENTICACAO
+
+O sap-rovema assina JWT com HMAC-SHA sobre jwt.secret
+(infrastructure/security/jwt/JwtSecretBean.kt). O sap-reports compartilha o mesmo
+segredo e APENAS VALIDA - nao emite token.
+
+Dois detalhes do codigo do rovema que precisam ser replicados exatamente:
+
+  - O token vem no header "Authorization" SEM O PREFIXO "Bearer"
+    (JwtAuthenticationFilter faz request.getHeader("Authorization") direto).
+
+  - A claim "authorities" e uma LISTA DE MAPAS [{"authority": "vendedor"}],
+    nao lista de strings (ver JwtHandler.getUser).
+
+Diferenca proposital em relacao ao rovema: la, falha de parse do JWT e engolida e
+a requisicao segue anonima. Aqui deve ser 401.
+
+Autorizacao: papeis do YAML  X  authorities do token. Relatorio sem intersecao
+nem aparece no GET /api/v1/relatorios.
+
+
+## ESTRUTURA DO PROJETO
+
+Scaffold copiado do sap-odbc (Boot 4.1.1, Kotlin 2.3.21, Java 25, tools.jackson),
+incluindo Dockerfile (jarmode=tools, nao-root), .dockerignore, os quatro workflows
+e o par application-local.yaml / .example.
+
+  br.andrew.sap_reports
+  |-- config/       ReportProperties, OdbcProperties, SecurityProperties
+  |-- definition/   ReportDefinition, ReportLoader, ReportDefinitionValidator
+  |-- odbc/         OdbcClient, QueryRequest/QueryResponse (espelho do contrato)
+  |-- render/       HtmlRenderer (Thymeleaf), PdfRenderer (openhtmltopdf),
+  |                 CsvRenderer
+  |-- security/     JwtAuthFilter, User
+  |-- service/      ReportService
+  +-- web/          ReportController, ApiExceptionHandler
+
+  src/main/resources/relatorios/*.{yaml,html}
+  src/main/resources/relatorios/_schema.json   # JSON Schema - contrato para a IA
+
+
+## FASES
+
+  1. Esqueleto - scaffold, Docker, CI, /actuator/health.
+  2. Cliente do sap-odbc - OdbcClient + tratamento de erro, WireMock nos testes.
+  3. Definicoes - modelo, loader, ReportDefinitionValidator, _schema.json.
+  4. Render HTML - Thymeleaf + ValueFormatter (BigDecimal/data/moeda).
+  5. PDF e CSV - openhtmltopdf sobre o HTML ja pronto; CSV com streaming e
+     paginacao.
+  6. Auth - validacao do JWT, filtro de papeis.
+  7. Primeiro relatorio real + doc docs/como-criar-relatorio.md (o prompt de
+     referencia para a IA).
+
+Fases 1-3 entregam valor sozinhas: com elas a validacao de definicoes ja roda
+em CI.
+
+
+## RISCOS E PONTOS DE ATENCAO
+
+THYMELEAF AVALIA SpEL - E EXECUCAO DE CODIGO.
+Voce escolheu Thymeleaf pela familiaridade da equipe, o que e legitimo, mas com
+templates gerados por IA o controle passa a ser DE PROCESSO: templates so entram
+pelo Git, com revisao humana no PR. Nunca aceitar template por upload ou banco
+sem revisao. Se um dia isso for necessario, trocar para um motor logic-less antes.
+
+PAGINACAO EM HTML->PDF E O PONTO FRACO.
+"Pagina X de Y", cabecalho repetindo e rodape fixo dependem de CSS Paged Media, e
+o suporte do openhtmltopdf e bom mas nao e o de um navegador. Validar com um
+relatorio denso real ainda na fase 5; se nao atender, a saida e Chromium headless
+(mesmo HTML, troca so o PdfRenderer).
+
+RENDERIZACAO SINCRONA TEM LIMITE.
+O desenho acima e sincrono. Se aparecer relatorio de minutos, promover para job
+assincrono com polling - por isso ReportService deve nascer com a geracao isolada
+do controller.
+
+
+## VERIFICACAO
+
+  - Unitario: ReportDefinitionValidator com definicoes propositalmente quebradas
+    (parametro sobrando, SQL com comentario, tabela sem schema, coluna
+    inexistente).
+
+  - Integracao: WireMock no lugar do sap-odbc - valida o corpo enviado e devolve
+    payload com BigDecimal como string e truncated: true, provando que o
+    formatador converte certo e que truncamento nao passa silencioso.
+
+  - Render: gerar PDF de um relatorio real de ~500 linhas e conferir paginacao,
+    cabecalho repetido e totais.
+
+  - Auth: MockMvc - sem header -> 401; token com papel errado -> 403; relatorio
+    fora dos papeis nao aparece na listagem.
+
+  - Ponta a ponta: docker compose com sap-odbc + sap-reports apontando para o
+    HANA de homologacao, gerando os tres formatos.
+
+  - CI: ./gradlew test jacocoTestReport, mesmo fluxo do sap-odbc.
+
+================================================================

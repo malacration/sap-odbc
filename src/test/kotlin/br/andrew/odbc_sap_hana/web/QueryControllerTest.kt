@@ -40,7 +40,7 @@ class QueryControllerTest(@Autowired val mockMvc: MockMvc) {
     fun `instrucao de escrita e recusada com 400`() {
         call("""{"sql":"DELETE FROM VENDAS.CLIENTES"}""")
             .andExpect(status().isBadRequest)
-            .andExpect(jsonPath("$.error").value("sql_invalido"))
+            .andExpect(jsonPath("$.erro").value("sql_invalido"))
     }
 
     @Test

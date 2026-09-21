@@ -20,10 +20,22 @@ class ApiExceptionHandler {
     fun onValidation(ex: SqlValidationException) =
         ResponseEntity.badRequest().body(ErrorResponse("sql_invalido", ex.message ?: "Instrucao invalida."))
 
+    /**
+     * Mensagem FIXA, nunca a do driver: o HANA inclui a instrucao SQL no texto da
+     * excecao, entao repassa-la devolveria a consulta (e nomes de tabela) ao
+     * chamador. O detalhe fica so no log.
+     */
     @ExceptionHandler(BadSqlGrammarException::class)
-    fun onGrammar(ex: BadSqlGrammarException) = ResponseEntity
-        .badRequest()
-        .body(ErrorResponse("sql_rejeitado_pelo_banco", rootMessage(ex), sqlState(ex)))
+    fun onGrammar(ex: BadSqlGrammarException): ResponseEntity<ErrorResponse> {
+        log.warn("Consulta recusada pelo banco: {}", rootMessage(ex))
+        return ResponseEntity.badRequest().body(
+            ErrorResponse(
+                "sql_rejeitado_pelo_banco",
+                "A consulta foi recusada pelo banco. Verifique nomes de tabela, colunas e sintaxe.",
+                sqlState(ex),
+            ),
+        )
+    }
 
     @ExceptionHandler(QueryTimeoutException::class)
     fun onTimeout(ex: QueryTimeoutException) = ResponseEntity
@@ -33,10 +45,60 @@ class ApiExceptionHandler {
     @ExceptionHandler(UncategorizedSQLException::class, SQLException::class)
     fun onSql(ex: Exception): ResponseEntity<ErrorResponse> {
         log.error("Falha ao executar consulta", ex)
+        // Mesmo motivo do handler acima: a mensagem do driver carrega o SQL.
         return ResponseEntity
             .status(HttpStatus.BAD_GATEWAY)
-            .body(ErrorResponse("erro_banco", rootMessage(ex), sqlState(ex)))
+            .body(ErrorResponse("erro_banco", "Falha ao executar a consulta no banco.", sqlState(ex)))
     }
+
+    /**
+     * ACHADO 2: corpo JSON malformado ou com campo de tipo errado caia no handler
+     * generico e virava 500 - erro do cliente reportado como falha do servidor,
+     * o que manda o suporte investigar o lugar errado.
+     */
+    @ExceptionHandler(org.springframework.http.converter.HttpMessageNotReadableException::class)
+    fun onCorpoInvalido(ex: org.springframework.http.converter.HttpMessageNotReadableException): ResponseEntity<ErrorResponse> {
+        log.warn("Corpo da requisicao invalido: {}", ex.message?.lineSequence()?.firstOrNull())
+        return ResponseEntity.badRequest().body(
+            ErrorResponse("corpo_invalido", "Corpo da requisicao invalido. Envie JSON com 'sql' e 'params'."),
+        )
+    }
+
+    /**
+     * ACHADO 3: falha de CONEXAO (`CannotGetJdbcConnectionException`) nao e
+     * SQLException e escapava para o generico, virando 500 em vez do 502
+     * documentado. Vem depois dos handlers especificos, que sao mais precisos.
+     */
+    @ExceptionHandler(org.springframework.dao.DataAccessException::class)
+    fun onAcessoDados(ex: org.springframework.dao.DataAccessException): ResponseEntity<ErrorResponse> {
+        log.error("Falha de acesso ao banco", ex)
+        return ResponseEntity
+            .status(HttpStatus.BAD_GATEWAY)
+            .body(ErrorResponse("erro_banco", "Nao foi possivel acessar o banco de dados.", sqlState(ex)))
+    }
+
+    /**
+     * Rota inexistente. Precisa vir ANTES do handler generico: sem isto a
+     * excecao cai no `Exception` la embaixo e um 404 legitimo vira 500 - o
+     * cliente recebe "erro interno" quando na verdade errou a URL.
+     */
+    @ExceptionHandler(
+        org.springframework.web.servlet.resource.NoResourceFoundException::class,
+        org.springframework.web.servlet.NoHandlerFoundException::class,
+    )
+    fun onRotaInexistente(ex: Exception) = ResponseEntity
+        .status(HttpStatus.NOT_FOUND)
+        .body(ErrorResponse("rota_nao_encontrada", "Rota nao encontrada. A API expoe POST /api/v1/query."))
+
+    @ExceptionHandler(org.springframework.web.HttpRequestMethodNotSupportedException::class)
+    fun onMetodo(ex: org.springframework.web.HttpRequestMethodNotSupportedException) = ResponseEntity
+        .status(HttpStatus.METHOD_NOT_ALLOWED)
+        .body(ErrorResponse("metodo_nao_permitido", "Metodo ${ex.method} nao permitido. Use POST em /api/v1/query."))
+
+    @ExceptionHandler(org.springframework.web.HttpMediaTypeNotSupportedException::class)
+    fun onMediaType(ex: org.springframework.web.HttpMediaTypeNotSupportedException) = ResponseEntity
+        .status(HttpStatus.UNSUPPORTED_MEDIA_TYPE)
+        .body(ErrorResponse("formato_nao_suportado", "Envie Content-Type: application/json."))
 
     @ExceptionHandler(Exception::class)
     fun onUnexpected(ex: Exception): ResponseEntity<ErrorResponse> {

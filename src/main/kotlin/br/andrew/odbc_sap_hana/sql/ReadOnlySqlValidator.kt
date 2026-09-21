@@ -74,7 +74,38 @@ class ReadOnlySqlValidator(private val props: QueryProperties) {
      * validacao exigiria parametros que o banco nunca vai pedir.
      */
     fun parameterNames(sql: String): Set<String> =
-        namedParameter.findAll(maskLiterals(sql)).map { it.groupValues[1] }.toSet()
+        namedParameter.findAll(mascararParaParametros(sql)).map { it.groupValues[1] }.toSet()
+
+    /**
+     * Mascara literais de texto E identificadores entre aspas duplas.
+     *
+     * Difere de [maskLiterals], que deixa o conteudo das aspas duplas VISIVEL de
+     * proposito - la o objetivo e impedir que palavra proibida se esconda num
+     * identificador. Aqui o objetivo e outro: `SELECT 1 AS "saldo:filial"` nao
+     * declara um parametro `filial`, e o binder do NamedParameterJdbcTemplate
+     * tambem nao o enxerga. Sem esta mascara o validador exigiria um parametro
+     * que o executor ignora, e a consulta legitima seria recusada.
+     */
+    private fun mascararParaParametros(sql: String): String {
+        val saida = StringBuilder(sql.length)
+        var aspas: Char? = null
+        var i = 0
+        while (i < sql.length) {
+            val c = sql[i]
+            when {
+                aspas != null -> {
+                    if (c == aspas) {
+                        if (i + 1 < sql.length && sql[i + 1] == aspas) { saida.append("  "); i += 2; continue }
+                        aspas = null; saida.append(c)
+                    } else saida.append(' ')
+                }
+                c == '\'' || c == '"' -> { aspas = c; saida.append(c) }
+                else -> saida.append(c)
+            }
+            i++
+        }
+        return saida.toString()
+    }
 
     fun validateParameters(sql: String, params: Map<String, Any?>) {
         if (params.size > props.maxParameters) {

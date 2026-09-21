@@ -8,6 +8,7 @@ import org.springframework.http.HttpStatus
 import org.springframework.http.MediaType
 import org.springframework.stereotype.Component
 import org.springframework.web.filter.OncePerRequestFilter
+import org.springframework.web.util.UrlPathHelper
 import java.security.MessageDigest
 import java.nio.charset.StandardCharsets
 
@@ -20,7 +21,8 @@ import java.nio.charset.StandardCharsets
 class ApiKeyFilter(private val props: SecurityProperties) : OncePerRequestFilter() {
 
     override fun shouldNotFilter(request: HttpServletRequest): Boolean =
-        props.apiKey.isNullOrBlank() || !request.requestURI.startsWith("/api/")
+        props.apiKey.isNullOrBlank() ||
+            !UrlPathHelper.defaultInstance.getPathWithinApplication(request).startsWith("/api/")
 
     override fun doFilterInternal(
         request: HttpServletRequest,
@@ -31,7 +33,7 @@ class ApiKeyFilter(private val props: SecurityProperties) : OncePerRequestFilter
         if (provided == null || !constantTimeEquals(provided, props.apiKey!!)) {
             response.status = HttpStatus.UNAUTHORIZED.value()
             response.contentType = MediaType.APPLICATION_JSON_VALUE
-            response.writer.write("""{"error":"nao_autorizado","message":"Header X-API-Key ausente ou invalido."}""")
+            response.writer.write("""{"erro":"nao_autorizado","mensagem":"Header X-API-Key ausente ou invalido."}""")
             return
         }
         chain.doFilter(request, response)

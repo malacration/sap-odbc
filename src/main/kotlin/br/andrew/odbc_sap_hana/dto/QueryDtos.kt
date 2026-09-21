@@ -29,8 +29,19 @@ data class QueryResponse(
     val elapsedMs: Long,
 )
 
+/**
+ * Envelope de erro padrao das APIs do workspace.
+ *
+ * `erro` e um codigo ESTAVEL, para o chamador decidir o tratamento sem depender
+ * do texto. `mensagem` e pronta para exibir ao usuario final - nunca carrega SQL,
+ * stacktrace ou nome de tabela.
+ *
+ * O mesmo formato e usado pelo sap-reports e pelo painel de vendas do sap-rovema.
+ * Ele ja foi `error`/`message` aqui, o que gerou um bug real: o cliente lia o
+ * campo errado e todo erro virava generico, perdendo `timeout` e `sql_invalido`.
+ */
 data class ErrorResponse(
-    val error: String,
-    val message: String,
+    val erro: String,
+    val mensagem: String,
     val sqlState: String? = null,
 )

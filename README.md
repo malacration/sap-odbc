@@ -91,13 +91,20 @@ Resposta:
 
 ### Erros
 
-| HTTP | `error` | Quando |
+| HTTP | `erro` | Quando |
 | --- | --- | --- |
 | 400 | `sql_invalido` | Reprovado pela validação read-only |
 | 400 | `sql_rejeitado_pelo_banco` | Sintaxe/objeto inválido para o HANA |
 | 401 | `nao_autorizado` | `X-API-Key` ausente ou incorreta |
 | 504 | `timeout` | Consulta excedeu `timeoutSeconds` |
 | 502 | `erro_banco` | Falha de conexão/execução no SAP |
+| 404 | `rota_nao_encontrada` | URL inexistente |
+| 405 | `metodo_nao_permitido` | Método HTTP errado |
+| 415 | `formato_nao_suportado` | Falta `Content-Type: application/json` |
+
+> **Todo** erro responde JSON no envelope `{erro, mensagem, sqlState?}` — inclusive
+> 404 e 405, que antes caíam na página HTML do Tomcat e quebravam o cliente no parse.
+> O mesmo envelope é usado pelo `sap-reports` e pelo painel de vendas do `sap-rovema`.
 
 ## Estrutura
 
