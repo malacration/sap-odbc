@@ -19,6 +19,17 @@ data class QueryProperties(
     val timeoutSecondsLimit: Int = 120,
     /** Quantidade de linhas buscadas por viagem ao servidor. */
     val fetchSize: Int = 500,
+    /**
+     * Teto de linhas do endpoint de fluxo (`/query/stream`). Bem maior que [maxRowsLimit]
+     * porque ali nada e acumulado em memoria: cada linha vai para a rede assim que lida.
+     */
+    val streamMaxRowsLimit: Int = 1_000_000,
+    /**
+     * Fluxos simultaneos. Cada fluxo segura uma conexao do pool pelo tempo todo da leitura,
+     * e o pool e pequeno (SAP_POOL_SIZE, padrao 5): sem este teto, poucos relatorios grandes
+     * esgotariam o pool e derrubariam as consultas curtas do sap-rovema.
+     */
+    val maxConcurrentStreams: Int = 2,
     /** Numero maximo de parametros nomeados por consulta. */
     val maxParameters: Int = 100,
     /** Tamanho maximo, em bytes, de um valor binario devolvido em base64. */

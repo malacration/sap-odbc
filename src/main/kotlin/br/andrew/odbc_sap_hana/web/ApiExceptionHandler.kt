@@ -28,27 +28,17 @@ class ApiExceptionHandler {
     @ExceptionHandler(BadSqlGrammarException::class)
     fun onGrammar(ex: BadSqlGrammarException): ResponseEntity<ErrorResponse> {
         log.warn("Consulta recusada pelo banco: {}", rootMessage(ex))
-        return ResponseEntity.badRequest().body(
-            ErrorResponse(
-                "sql_rejeitado_pelo_banco",
-                "A consulta foi recusada pelo banco. Verifique nomes de tabela, colunas e sintaxe.",
-                sqlState(ex),
-            ),
-        )
+        return responder(ex)
     }
 
     @ExceptionHandler(QueryTimeoutException::class)
-    fun onTimeout(ex: QueryTimeoutException) = ResponseEntity
-        .status(HttpStatus.GATEWAY_TIMEOUT)
-        .body(ErrorResponse("timeout", "A consulta excedeu o tempo limite.", sqlState(ex)))
+    fun onTimeout(ex: QueryTimeoutException) = responder(ex)
 
     @ExceptionHandler(UncategorizedSQLException::class, SQLException::class)
     fun onSql(ex: Exception): ResponseEntity<ErrorResponse> {
         log.error("Falha ao executar consulta", ex)
         // Mesmo motivo do handler acima: a mensagem do driver carrega o SQL.
-        return ResponseEntity
-            .status(HttpStatus.BAD_GATEWAY)
-            .body(ErrorResponse("erro_banco", "Falha ao executar a consulta no banco.", sqlState(ex)))
+        return responder(ex)
     }
 
     /**
@@ -72,10 +62,15 @@ class ApiExceptionHandler {
     @ExceptionHandler(org.springframework.dao.DataAccessException::class)
     fun onAcessoDados(ex: org.springframework.dao.DataAccessException): ResponseEntity<ErrorResponse> {
         log.error("Falha de acesso ao banco", ex)
-        return ResponseEntity
-            .status(HttpStatus.BAD_GATEWAY)
-            .body(ErrorResponse("erro_banco", "Nao foi possivel acessar o banco de dados.", sqlState(ex)))
+        return responder(ex)
     }
+
+    /** Fluxo cheio: o cliente pode tentar de novo em instantes, por isso 503 e nao 500. */
+    @ExceptionHandler(br.andrew.odbc_sap_hana.service.FluxoOcupadoException::class)
+    fun onFluxoOcupado(ex: br.andrew.odbc_sap_hana.service.FluxoOcupadoException) = ResponseEntity
+        .status(HttpStatus.SERVICE_UNAVAILABLE)
+        .header("Retry-After", "30")
+        .body(ErrorResponse("ocupado", ex.message ?: "Limite de consultas em fluxo atingido."))
 
     /**
      * Rota inexistente. Precisa vir ANTES do handler generico: sem isto a
@@ -108,10 +103,8 @@ class ApiExceptionHandler {
             .body(ErrorResponse("erro_interno", "Erro inesperado ao processar a requisicao."))
     }
 
-    private fun sqlState(ex: Throwable): String? = generateSequence(ex) { it.cause }
-        .filterIsInstance<SQLException>()
-        .firstOrNull()
-        ?.sqlState
+    private fun responder(ex: Throwable): ResponseEntity<ErrorResponse> =
+        ErrosBanco.traduzir(ex).let { (status, corpo) -> ResponseEntity.status(status).body(corpo) }
 
     private fun rootMessage(ex: Throwable): String = generateSequence(ex) { it.cause }
         .last()

@@ -89,6 +89,27 @@ Resposta:
 - Nunca concatene valor do usuário no texto do SQL: isso reintroduz injection
   na sua aplicação, antes mesmo de chegar nesta API.
 
+### Resultado grande: `POST /api/v1/query/stream`
+
+Mesmo corpo e mesmo validador do `/query`, mas o resultado vem em **fluxo** (NDJSON, uma
+mensagem JSON por linha) e nada é acumulado em memória: cada linha lida do banco
+(`fetch-size`) vai direto para a rede. É o caminho do `sap-reports` para PDF/CSV grandes.
+
+```
+{"tipo":"colunas","columns":[{"name":"CODIGO","type":"NVARCHAR","nullable":true}]}
+{"tipo":"linha","row":{"CODIGO":"C0001"}}
+{"tipo":"fim","rowCount":1,"truncated":false,"elapsedMs":12}
+```
+
+- `maxRows` vai até `query.stream-max-rows-limit` (padrão 1.000.000), não até `max-rows-limit`.
+- Erro **antes** da primeira mensagem (validação, SQL recusado pelo banco, fluxo ocupado) volta
+  como erro HTTP comum. Erro **depois** (timeout, queda no meio) só pode ir dentro do fluxo,
+  porque o 200 já saiu: `{"tipo":"erro","erro":"timeout","mensagem":"..."}`.
+- **Sem a mensagem `fim`, o resultado está incompleto** e o cliente deve descartá-lo.
+- Cada fluxo segura uma conexão do pool durante toda a leitura. `query.max-concurrent-streams`
+  (padrão 2) limita quantos rodam ao mesmo tempo, para não esgotar o pool (`SAP_POOL_SIZE`)
+  das consultas curtas; acima disso responde `503 ocupado` com `Retry-After`.
+
 ### Erros
 
 | HTTP | `erro` | Quando |
@@ -98,6 +119,7 @@ Resposta:
 | 401 | `nao_autorizado` | `X-API-Key` ausente ou incorreta |
 | 504 | `timeout` | Consulta excedeu `timeoutSeconds` |
 | 502 | `erro_banco` | Falha de conexão/execução no SAP |
+| 503 | `ocupado` | `/query/stream` com todos os fluxos simultâneos em uso |
 | 404 | `rota_nao_encontrada` | URL inexistente |
 | 405 | `metodo_nao_permitido` | Método HTTP errado |
 | 415 | `formato_nao_suportado` | Falta `Content-Type: application/json` |
@@ -111,8 +133,9 @@ Resposta:
 ```
 sql/ReadOnlySqlValidator.kt   validação em camadas da instrução
 service/QueryService.kt       execução com bind params, limites e mapeamento para JSON
-web/QueryController.kt        POST /api/v1/query
+web/QueryController.kt        POST /api/v1/query e POST /api/v1/query/stream (NDJSON)
 web/ApiExceptionHandler.kt    tradução de exceções para JSON (sem vazar stacktrace)
+web/ErrosBanco.kt             tradução de falha do banco, comum ao JSON e ao fluxo
 security/ApiKeyFilter.kt      autenticação opcional por X-API-Key
 config/QueryProperties.kt     limites e listas configuráveis
 ```

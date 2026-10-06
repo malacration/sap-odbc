@@ -18,7 +18,13 @@ import java.sql.Clob
 import java.sql.ResultSet
 import java.sql.SQLFeatureNotSupportedException
 import java.util.Base64
+import java.util.concurrent.Semaphore
 import javax.sql.DataSource
+
+/** Todos os fluxos simultaneos permitidos ja estao em uso. */
+class FluxoOcupadoException(limite: Int) : RuntimeException(
+    "Limite de $limite consultas em fluxo simultaneas atingido. Tente novamente em instantes.",
+)
 
 @Service
 class QueryService(
@@ -27,6 +33,7 @@ class QueryService(
     private val props: QueryProperties,
 ) {
     private val log = LoggerFactory.getLogger(QueryService::class.java)
+    private val fluxos = Semaphore(props.maxConcurrentStreams)
 
     fun execute(request: QueryRequest): QueryResponse {
         val sql = validator.validate(request.sql)
@@ -34,16 +41,7 @@ class QueryService(
 
         val maxRows = clamp(request.maxRows ?: props.maxRows, props.maxRowsLimit, "maxRows")
         val timeout = clamp(request.timeoutSeconds ?: props.timeoutSeconds, props.timeoutSecondsLimit, "timeoutSeconds")
-
-        // Uma instancia por requisicao: maxRows/queryTimeout sao estado mutavel do template.
-        val jdbc = JdbcTemplate(dataSource).apply {
-            this.queryTimeout = timeout
-            // +1 linha para descobrir se o resultado foi truncado.
-            this.maxRows = maxRows + 1
-            this.fetchSize = minOf(props.fetchSize, maxRows + 1)
-            this.isResultsMapCaseInsensitive = false
-        }
-        val template = NamedParameterJdbcTemplate(jdbc)
+        val template = template(maxRows, timeout)
 
         log.info("Executando consulta somente-leitura (params={}, maxRows={}, timeout={}s)", request.params.keys, maxRows, timeout)
         val start = System.nanoTime()
@@ -59,6 +57,79 @@ class QueryService(
         )
     }
 
+    /**
+     * Valida e reserva um fluxo, SEM executar. Tudo o que pode ser recusado antes da
+     * primeira linha (SQL invalido, parametro, limite, fluxo ocupado) sai daqui como
+     * excecao comum, e o chamador responde com o status HTTP correto - depois que o
+     * fluxo comeca, o 200 ja foi enviado e erro so pode ir dentro do proprio fluxo.
+     *
+     * A reserva e liberada no [ConsultaEmFluxo.close]: use sempre com `use {}`.
+     */
+    fun prepararFluxo(request: QueryRequest): ConsultaEmFluxo {
+        val sql = validator.validate(request.sql)
+        validator.validateParameters(sql, request.params)
+        val maxRows = clamp(request.maxRows ?: props.maxRows, props.streamMaxRowsLimit, "maxRows")
+        val timeout = clamp(request.timeoutSeconds ?: props.timeoutSeconds, props.timeoutSecondsLimit, "timeoutSeconds")
+        if (!fluxos.tryAcquire()) throw FluxoOcupadoException(props.maxConcurrentStreams)
+        return ConsultaEmFluxo(sql, request.params, maxRows, timeout)
+    }
+
+    inner class ConsultaEmFluxo internal constructor(
+        private val sql: String,
+        private val params: Map<String, Any?>,
+        private val maxRows: Int,
+        private val timeout: Int,
+    ) : AutoCloseable {
+        private var liberada = false
+
+        /**
+         * Le o resultado linha a linha (fetchSize do driver) e entrega cada uma ao
+         * chamador, sem acumular. Excecao de [aoLer] (cliente desconectou) interrompe
+         * a leitura e o JdbcTemplate fecha ResultSet e conexao.
+         */
+        fun executar(aoIniciar: (List<ColumnMeta>) -> Unit, aoLer: (Map<String, Any?>) -> Unit): FimFluxo {
+            log.info("Executando consulta em fluxo (params={}, maxRows={}, timeout={}s)", params.keys, maxRows, timeout)
+            val start = System.nanoTime()
+            val (linhas, truncado) = template(maxRows, timeout).query(sql, MapSqlParameterSource(params), ResultSetExtractor { rs ->
+                val columns = colunas(rs)
+                aoIniciar(columns)
+                var lidas = 0
+                var truncado = false
+                while (rs.next()) {
+                    if (lidas >= maxRows) {
+                        truncado = true
+                        break
+                    }
+                    aoLer(linha(rs, columns))
+                    lidas++
+                }
+                lidas to truncado
+            })!!
+            return FimFluxo(linhas, truncado, (System.nanoTime() - start) / 1_000_000)
+        }
+
+        override fun close() {
+            if (!liberada) {
+                liberada = true
+                fluxos.release()
+            }
+        }
+    }
+
+    data class FimFluxo(val rowCount: Int, val truncated: Boolean, val elapsedMs: Long)
+
+    // Uma instancia por requisicao: maxRows/queryTimeout sao estado mutavel do template.
+    private fun template(maxRows: Int, timeout: Int): NamedParameterJdbcTemplate {
+        val jdbc = JdbcTemplate(dataSource).apply {
+            this.queryTimeout = timeout
+            // +1 linha para descobrir se o resultado foi truncado.
+            this.maxRows = maxRows + 1
+            this.fetchSize = minOf(props.fetchSize, maxRows + 1)
+            this.isResultsMapCaseInsensitive = false
+        }
+        return NamedParameterJdbcTemplate(jdbc)
+    }
+
     private fun clamp(value: Int, limit: Int, field: String): Int {
         if (value <= 0) throw SqlValidationException("O campo '$field' deve ser maior que zero.")
         if (value > limit) throw SqlValidationException("O campo '$field' excede o limite de $limit.")
@@ -72,14 +143,7 @@ class QueryService(
     )
 
     private fun extractor(maxRows: Int) = ResultSetExtractor { rs: ResultSet ->
-        val meta = rs.metaData
-        val columns = (1..meta.columnCount).map { i ->
-            ColumnMeta(
-                name = meta.getColumnLabel(i) ?: meta.getColumnName(i),
-                type = meta.getColumnTypeName(i) ?: "UNKNOWN",
-                nullable = meta.isNullable(i) != java.sql.ResultSetMetaData.columnNoNulls,
-            )
-        }
+        val columns = colunas(rs)
         val rows = ArrayList<Map<String, Any?>>()
         var truncated = false
         while (rs.next()) {
@@ -87,13 +151,28 @@ class QueryService(
                 truncated = true
                 break
             }
-            val row = LinkedHashMap<String, Any?>(columns.size)
-            columns.forEachIndexed { idx, column ->
-                row[uniqueKey(row, column.name, idx)] = toJsonValue(rs.getObject(idx + 1))
-            }
-            rows.add(row)
+            rows.add(linha(rs, columns))
         }
         Extraction(columns, rows, truncated)
+    }
+
+    private fun colunas(rs: ResultSet): List<ColumnMeta> {
+        val meta = rs.metaData
+        return (1..meta.columnCount).map { i ->
+            ColumnMeta(
+                name = meta.getColumnLabel(i) ?: meta.getColumnName(i),
+                type = meta.getColumnTypeName(i) ?: "UNKNOWN",
+                nullable = meta.isNullable(i) != java.sql.ResultSetMetaData.columnNoNulls,
+            )
+        }
+    }
+
+    private fun linha(rs: ResultSet, columns: List<ColumnMeta>): Map<String, Any?> {
+        val row = LinkedHashMap<String, Any?>(columns.size)
+        columns.forEachIndexed { idx, column ->
+            row[uniqueKey(row, column.name, idx)] = toJsonValue(rs.getObject(idx + 1))
+        }
+        return row
     }
 
     /** Consultas podem devolver rotulos repetidos; mantemos todos no JSON. */
