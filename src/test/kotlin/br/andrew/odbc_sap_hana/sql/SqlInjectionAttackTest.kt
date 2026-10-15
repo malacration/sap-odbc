@@ -141,7 +141,7 @@ class SqlInjectionAttackTest {
 
     @Test
     fun `instrucao acima do limite de tamanho`() {
-        val gigante = "SELECT " + "A,".repeat(20_000) + "B FROM VENDAS.C"
+        val gigante = "SELECT " + "A,".repeat(QueryProperties().maxSqlLength) + "B FROM VENDAS.C"
         bloqueado(gigante)
     }
 

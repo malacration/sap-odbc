@@ -7,8 +7,13 @@ import org.springframework.boot.context.properties.ConfigurationProperties
  */
 @ConfigurationProperties(prefix = "query")
 data class QueryProperties(
-    /** Tamanho maximo, em caracteres, da instrucao SQL aceita. */
-    val maxSqlLength: Int = 20_000,
+    /**
+     * Tamanho maximo, em caracteres, da instrucao SQL aceita. Os relatorios do
+     * sap-reports chegam a CTEs longas; o HANA aceita bem mais que isto, entao o
+     * teto existe so contra abuso. Sobrescreva com QUERY_MAX_SQL_LENGTH.
+     * O `reports.max-sql-length` do sap-reports precisa acompanhar este valor.
+     */
+    val maxSqlLength: Int = 100_000,
     /** Numero maximo de linhas devolvidas em uma unica resposta. */
     val maxRows: Int = 1_000,
     /** Teto para o parametro maxRows enviado pelo cliente. */
