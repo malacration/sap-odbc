@@ -1,8 +1,8 @@
 plugins {
 	id("jacoco")
-	kotlin("jvm") version "2.3.21"
-	kotlin("plugin.spring") version "2.3.21"
-	id("org.springframework.boot") version "4.1.1"
+	kotlin("jvm") version "2.4.21"
+	kotlin("plugin.spring") version "2.4.21"
+	id("org.springframework.boot") version "4.1.2"
 	id("io.spring.dependency-management") version "1.1.7"
 }
 
@@ -28,9 +28,9 @@ dependencies {
 	implementation("tools.jackson.module:jackson-module-kotlin")
 
 	// Parser SQL usado para garantir que a instrucao e, de fato, um SELECT.
-	implementation("com.github.jsqlparser:jsqlparser:5.3")
+	implementation("com.github.jsqlparser:jsqlparser:5.4")
 	// Driver JDBC do SAP HANA (equivalente JVM do driver ODBC HDBODBC).
-	runtimeOnly("com.sap.cloud.db.jdbc:ngdbc:2.29.11")
+	runtimeOnly("com.sap.cloud.db.jdbc:ngdbc:2.30.11")
 
 	developmentOnly("org.springframework.boot:spring-boot-devtools")
 	testImplementation("org.springframework.boot:spring-boot-starter-actuator-test")
@@ -43,7 +43,7 @@ dependencies {
 
 kotlin {
 	compilerOptions {
-		freeCompilerArgs.addAll("-Xjsr305=strict", "-Xannotation-default-target=param-property")
+		freeCompilerArgs.addAll("-Xjsr305=strict")
 	}
 }
 

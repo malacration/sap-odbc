@@ -1,0 +1,16 @@
+FROM eclipse-temurin:25-jdk AS build
+WORKDIR /workspace/app
+COPY . .
+RUN --mount=type=cache,id=pix-portal-odbc-gradle,target=/root/.gradle,sharing=locked chmod +x gradlew && ./gradlew bootJar --no-daemon
+RUN java -Djarmode=tools -jar build/libs/*.jar extract --layers --launcher --destination /extracted
+
+FROM eclipse-temurin:25-jre
+WORKDIR /app
+RUN groupadd -r spring && useradd -r -g spring spring
+COPY --from=build --chown=spring:spring /extracted/dependencies/ ./
+COPY --from=build --chown=spring:spring /extracted/spring-boot-loader/ ./
+COPY --from=build --chown=spring:spring /extracted/snapshot-dependencies/ ./
+COPY --from=build --chown=spring:spring /extracted/application/ ./
+USER spring
+EXPOSE 2020
+ENTRYPOINT ["java", "-XX:MaxRAMPercentage=75", "org.springframework.boot.loader.launch.JarLauncher"]
